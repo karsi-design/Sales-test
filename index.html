@@ -1034,33 +1034,43 @@ async function submitTest(manual=true, reason='manual') {
   const timeStr = Math.floor(elapsed/60)+'m '+elapsed%60+'s';
   const { answers, score } = collectAnswers();
 
-  const payload = {
-    action: 'submit',
-    name: candidate.name,
-    phone: candidate.phone,
-    email: candidate.email,
-    score: score + '/' + MCQ_COUNT,
-    timeTaken: timeStr,
-    violations: violations,
-    flagged: violations > 0,
-    reason: reason,
-    submittedAt: new Date().toISOString(),
-    answers: JSON.stringify(answers)
-  };
-
-  // Show result immediately
+  // Show result immediately — don't wait for network
   showResult(score, timeStr, violations, reason);
 
-  // Submit to Google Sheets in background
+  // Build MCQ summary (compact — fits in GET URL)
+  const mcqSummary = answers
+    .filter(a => a.type === 'mcq')
+    .map(a => (a.correct ? '1' : '0'))
+    .join('');
+
+  // Descriptive answers — send each as separate param
+  const descAnswers = answers.filter(a => a.type === 'text');
+
+  // Submit via GET (works with Apps Script — no CORS issue)
   try {
-    await fetch(APPS_SCRIPT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+    const params = new URLSearchParams({
+      action:     'submit',
+      name:       candidate.name,
+      phone:      candidate.phone,
+      email:      candidate.email,
+      score:      score + '/' + MCQ_COUNT,
+      timeTaken:  timeStr,
+      violations: violations,
+      flagged:    violations > 0 ? '1' : '0',
+      reason:     reason,
+      mcq:        mcqSummary,
+      d1: descAnswers[0] ? descAnswers[0].answer.substring(0,500) : '',
+      d2: descAnswers[1] ? descAnswers[1].answer.substring(0,500) : '',
+      d3: descAnswers[2] ? descAnswers[2].answer.substring(0,500) : '',
+      d4: descAnswers[3] ? descAnswers[3].answer.substring(0,500) : '',
+      d5: descAnswers[4] ? descAnswers[4].answer.substring(0,500) : '',
     });
+
+    // Use no-cors image trick as fallback guarantee
+    const url = APPS_SCRIPT_URL + '?' + params.toString();
+    await fetch(url, { method: 'GET', mode: 'no-cors' });
   } catch(e) {
     console.error('Submission error:', e);
-    // Still show result — don't block user
   }
 }
 
@@ -1118,23 +1128,20 @@ function terminateTest() {
   const { answers, score } = collectAnswers();
   const elapsed = startTime ? Math.floor((new Date()-startTime)/1000) : 0;
 
-  const payload = {
-    action: 'submit',
-    name: candidate.name,
-    phone: candidate.phone,
-    email: candidate.email,
-    score: score + '/' + MCQ_COUNT,
-    timeTaken: Math.floor(elapsed/60)+'m '+elapsed%60+'s',
-    violations: violations,
-    flagged: true,
-    reason: 'terminated',
-    submittedAt: new Date().toISOString(),
-    answers: JSON.stringify(answers)
-  };
-
-  fetch(APPS_SCRIPT_URL, {
-    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
-  }).catch(()=>{});
+  const timeStr2 = Math.floor(elapsed/60)+'m '+elapsed%60+'s';
+  const descAnswers2 = answers.filter(a => a.type === 'text');
+  const mcqSummary2 = answers.filter(a=>a.type==='mcq').map(a=>a.correct?'1':'0').join('');
+  const params2 = new URLSearchParams({
+    action:'submit', name:candidate.name, phone:candidate.phone, email:candidate.email,
+    score:score+'/'+MCQ_COUNT, timeTaken:timeStr2, violations:violations,
+    flagged:'1', reason:'terminated', mcq:mcqSummary2,
+    d1:descAnswers2[0]?descAnswers2[0].answer.substring(0,500):'',
+    d2:descAnswers2[1]?descAnswers2[1].answer.substring(0,500):'',
+    d3:descAnswers2[2]?descAnswers2[2].answer.substring(0,500):'',
+    d4:descAnswers2[3]?descAnswers2[3].answer.substring(0,500):'',
+    d5:descAnswers2[4]?descAnswers2[4].answer.substring(0,500):'',
+  });
+  fetch(APPS_SCRIPT_URL+'?'+params2.toString(), {method:'GET', mode:'no-cors'}).catch(()=>{});
 
   document.getElementById('timer-box').style.display = 'none';
   document.getElementById('warning-banner').classList.remove('show');
