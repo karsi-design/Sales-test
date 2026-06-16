@@ -652,6 +652,9 @@
       <div class="result-note">
         Your responses have been recorded. HR will review your descriptive answers and reach out to you shortly.
       </div>
+      <div id="submit-status" style="margin-top:14px;font-size:13px;font-weight:600;color:var(--muted);text-align:center">
+        ⏳ Saving to sheet...
+      </div>
     </div>
   </div>
 </div>
@@ -1046,32 +1049,26 @@ async function submitTest(manual=true, reason='manual') {
   // Descriptive answers — send each as separate param
   const descAnswers = answers.filter(a => a.type === 'text');
 
-  // Submit via GET (works with Apps Script — no CORS issue)
-  try {
-    const params = new URLSearchParams({
-      action:     'submit',
-      name:       candidate.name,
-      phone:      candidate.phone,
-      email:      candidate.email,
-      score:      score + '/' + MCQ_COUNT,
-      timeTaken:  timeStr,
-      violations: violations,
-      flagged:    violations > 0 ? '1' : '0',
-      reason:     reason,
-      mcq:        mcqSummary,
-      d1: descAnswers[0] ? descAnswers[0].answer.substring(0,500) : '',
-      d2: descAnswers[1] ? descAnswers[1].answer.substring(0,500) : '',
-      d3: descAnswers[2] ? descAnswers[2].answer.substring(0,500) : '',
-      d4: descAnswers[3] ? descAnswers[3].answer.substring(0,500) : '',
-      d5: descAnswers[4] ? descAnswers[4].answer.substring(0,500) : '',
-    });
+  // Send via image ping — bypasses CORS completely, works with Apps Script
+  const params = new URLSearchParams({
+    action:     'submit',
+    name:       candidate.name,
+    phone:      candidate.phone,
+    email:      candidate.email,
+    score:      score + '/' + MCQ_COUNT,
+    timeTaken:  timeStr,
+    violations: String(violations),
+    flagged:    violations > 0 ? '1' : '0',
+    reason:     reason,
+    mcq:        mcqSummary,
+    d1: descAnswers[0] ? descAnswers[0].answer.substring(0, 500) : '',
+    d2: descAnswers[1] ? descAnswers[1].answer.substring(0, 500) : '',
+    d3: descAnswers[2] ? descAnswers[2].answer.substring(0, 500) : '',
+    d4: descAnswers[3] ? descAnswers[3].answer.substring(0, 500) : '',
+    d5: descAnswers[4] ? descAnswers[4].answer.substring(0, 500) : '',
+  });
 
-    // Use no-cors image trick as fallback guarantee
-    const url = APPS_SCRIPT_URL + '?' + params.toString();
-    await fetch(url, { method: 'GET', mode: 'no-cors' });
-  } catch(e) {
-    console.error('Submission error:', e);
-  }
+  pingUrl(APPS_SCRIPT_URL + '?' + params.toString());
 }
 
 function collectAnswers() {
@@ -1141,11 +1138,49 @@ function terminateTest() {
     d4:descAnswers2[3]?descAnswers2[3].answer.substring(0,500):'',
     d5:descAnswers2[4]?descAnswers2[4].answer.substring(0,500):'',
   });
-  fetch(APPS_SCRIPT_URL+'?'+params2.toString(), {method:'GET', mode:'no-cors'}).catch(()=>{});
+  pingUrl(APPS_SCRIPT_URL+'?'+params2.toString());
 
   document.getElementById('timer-box').style.display = 'none';
   document.getElementById('warning-banner').classList.remove('show');
   showScreen('screen-terminated');
+}
+
+// ═══════════════════════════════════════════════════════
+//  PING HELPER
+//  Apps Script returns JSON with CORS headers on GET,
+//  so a plain fetch() works. We update the status div
+//  so you can confirm the sheet write happened.
+// ═══════════════════════════════════════════════════════
+function pingUrl(url) {
+  const statusEl = document.getElementById('submit-status');
+
+  fetch(url)
+    .then(r => r.json())
+    .then(data => {
+      if (statusEl) {
+        if (data.status === 'ok') {
+          statusEl.textContent = '✅ Result saved to sheet successfully.';
+          statusEl.style.color = 'var(--green)';
+        } else if (data.status === 'duplicate') {
+          statusEl.textContent = '⚠ Already recorded in sheet.';
+          statusEl.style.color = 'var(--gold)';
+        } else {
+          statusEl.textContent = '⚠ Sheet response: ' + JSON.stringify(data);
+          statusEl.style.color = 'orange';
+        }
+      }
+      console.log('Sheet response:', data);
+    })
+    .catch(err => {
+      // CORS error — fall back to image ping which fires the GET silently
+      console.warn('fetch failed, trying image ping:', err.message);
+      const img = new Image();
+      img.src = url;
+      if (statusEl) {
+        statusEl.textContent = '⚠ Could not confirm save (CORS). Check the sheet manually.';
+        statusEl.style.color = 'orange';
+      }
+    });
 }
 </script>
 </body>
