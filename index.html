@@ -294,7 +294,7 @@
     background: var(--border);
     border-radius: 4px;
     height: 4px;
-    margin-bottom: 28px;
+    margin-bottom: 18px;
     overflow: hidden;
   }
   #progress-fill {
@@ -304,6 +304,64 @@
     transition: width 0.4s ease;
     width: 0%;
   }
+
+  /* ── PER-QUESTION TIMER ── */
+  #q-timer-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+  #q-timer-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  #q-timer-display {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 800;
+    color: var(--navy);
+  }
+  #q-timer-display.warning { color: var(--gold); }
+  #q-timer-display.critical { color: var(--red); animation: blink 0.6s step-end infinite; }
+
+  #q-timer-bar-wrap {
+    background: var(--border);
+    border-radius: 6px;
+    height: 8px;
+    margin-bottom: 24px;
+    overflow: hidden;
+  }
+  #q-timer-bar {
+    height: 100%;
+    background: linear-gradient(90deg, var(--navy-mid), var(--gold));
+    border-radius: 6px;
+    width: 100%;
+    transition: width 1s linear, background 0.3s;
+  }
+  #q-timer-bar.warning { background: var(--gold); }
+  #q-timer-bar.critical { background: var(--red); }
+
+  #next-btn {
+    display: block;
+    width: 100%;
+    padding: 16px;
+    background: var(--navy);
+    color: #fff;
+    border: none;
+    border-radius: 12px;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    margin-top: 24px;
+    transition: background 0.2s;
+  }
+  #next-btn:hover { background: var(--navy-mid); }
+  #next-btn:disabled { background: #b0b8cc; cursor: default; }
 
   .q-card {
     background: var(--surface);
@@ -629,13 +687,22 @@
 </div>
 
 <!-- ═══════════════════════════════════════
-     SCREEN 3: QUIZ
+     SCREEN 3: QUIZ (one question at a time)
 ════════════════════════════════════════ -->
 <div id="screen-quiz" class="screen">
   <div id="quiz-screen">
     <div id="progress-wrap"><div id="progress-fill"></div></div>
+
+    <div id="q-timer-row">
+      <span id="q-timer-label">Time for this question</span>
+      <span id="q-timer-display">10s</span>
+    </div>
+    <div id="q-timer-bar-wrap"><div id="q-timer-bar"></div></div>
+
     <div id="questions-container"></div>
-    <button id="submit-btn" onclick="confirmSubmit()">Submit Test →</button>
+
+    <button id="next-btn" onclick="goNext()">Next Question →</button>
+    <button id="submit-btn" onclick="confirmSubmit()" style="display:none">Submit Test →</button>
   </div>
 </div>
 
@@ -834,7 +901,16 @@ async function verifyPhone() {
       throw new Error('Unexpected response');
     }
   } catch(e) {
-    errEl.textContent = '⚠ Verification failed. Check your internet and try again.';
+    console.error('Verify error:', e);
+    // Try to get raw response for debugging
+    try {
+      const raw = await fetch(APPS_SCRIPT_URL + '?action=verify&phone=' + ph);
+      const text = await raw.text();
+      console.error('Raw response:', text);
+      errEl.textContent = '⚠ Server error: ' + text.substring(0, 120);
+    } catch(e2) {
+      errEl.textContent = '⚠ Network error — cannot reach server. Check internet.';
+    }
     errEl.classList.add('show');
     btn.disabled = false;
     btn.textContent = 'Verify';
@@ -889,80 +965,156 @@ function toggleBeginBtn() {
 }
 
 // ═══════════════════════════════════════════════════════
-//  BEGIN TEST
+//  BEGIN TEST — one question at a time, forward-only
 // ═══════════════════════════════════════════════════════
+let currentQIndex = 0;
+let userAnswers = [];   // stores answer for each question as user moves forward
+let qTimerInterval = null;
+let qSecondsLeft = 0;
+const MCQ_TIME_LIMIT = 10;   // seconds per MCQ
+const TEXT_TIME_LIMIT = 30;  // seconds per descriptive question
+
 function beginTest() {
   showScreen('screen-quiz');
   document.getElementById('timer-box').style.display = 'flex';
   document.getElementById('warning-banner').classList.add('show');
-  buildQuestions();
   testActive = true;
   startTime = new Date();
-  startTimer();
+  startTimer();          // overall 20-min timer (unchanged)
   attachAntiCheat();
-  // Try fullscreen on mobile (best effort)
   try { document.documentElement.requestFullscreen && document.documentElement.requestFullscreen(); } catch(e){}
+
+  currentQIndex = 0;
+  userAnswers = new Array(QUESTIONS.length).fill(null);
+  renderQuestion(0);
 }
 
 // ═══════════════════════════════════════════════════════
-//  BUILD QUESTIONS
+//  RENDER A SINGLE QUESTION
 // ═══════════════════════════════════════════════════════
-function buildQuestions() {
+function renderQuestion(idx) {
+  clearInterval(qTimerInterval);
+
+  const q = QUESTIONS[idx];
   const container = document.getElementById('questions-container');
-  container.innerHTML = '';
+  const total = QUESTIONS.length;
+  const isLast = idx === total - 1;
 
-  let mcqSectionDone = false;
-  QUESTIONS.forEach((q, i) => {
-    if (q.type === 'text' && !mcqSectionDone) {
-      mcqSectionDone = true;
-      const badge = document.createElement('div');
-      badge.className = 'section-badge';
-      badge.textContent = '✍ Descriptive Questions';
-      container.appendChild(badge);
+  let html = '';
+  if (idx === MCQ_COUNT) {
+    html += `<div class="section-badge">✍ Descriptive Questions</div>`;
+  }
+
+  html += `<div class="q-card">
+    <div class="q-meta">Question ${idx+1} of ${total}${q.type==='mcq' ? ' · MCQ' : ' · Descriptive'}</div>
+    <div class="q-text">${idx+1}. ${q.text}</div>`;
+
+  if (q.type === 'mcq') {
+    html += '<div class="options">';
+    q.options.forEach((opt, j) => {
+      html += `<label class="option-label">
+        <input type="radio" name="qcur" value="${j}" onchange="onAnswerChange()">
+        <span>${String.fromCharCode(65+j)}. ${opt}</span>
+      </label>`;
+    });
+    html += '</div>';
+  } else {
+    html += `<textarea id="ta-current" placeholder="Type your answer here…" maxlength="2000" oninput="onAnswerChange()" onkeydown="blockShortcuts(event)"></textarea>
+      <div style="text-align:right;font-size:11px;color:var(--muted);margin-top:4px" id="char-current">0 / 2000</div>`;
+  }
+  html += `</div>`;
+
+  container.innerHTML = html;
+
+  if (q.type === 'text') {
+    const ta = document.getElementById('ta-current');
+    ta.addEventListener('input', function() {
+      document.getElementById('char-current').textContent = this.value.length + ' / 2000';
+    });
+  }
+
+  // Update progress bar (based on questions passed, not answered)
+  document.getElementById('progress-fill').style.width = Math.round((idx/total)*100)+'%';
+
+  // Toggle Next vs Submit button
+  document.getElementById('next-btn').style.display = isLast ? 'none' : 'block';
+  document.getElementById('submit-btn').style.display = isLast ? 'block' : 'none';
+  document.getElementById('next-btn').disabled = false;
+
+  // Start per-question countdown
+  qSecondsLeft = q.type === 'mcq' ? MCQ_TIME_LIMIT : TEXT_TIME_LIMIT;
+  updateQTimerDisplay();
+  qTimerInterval = setInterval(() => {
+    qSecondsLeft--;
+    updateQTimerDisplay();
+    if (qSecondsLeft <= 0) {
+      clearInterval(qTimerInterval);
+      autoAdvance();
     }
-
-    const card = document.createElement('div');
-    card.className = 'q-card';
-    const total = QUESTIONS.length;
-    let inner = `<div class="q-meta">Question ${i+1} of ${total}${q.type==='mcq' ? ' · MCQ' : ' · Descriptive'}</div>`;
-    inner += `<div class="q-text">${i+1}. ${q.text}</div>`;
-
-    if (q.type === 'mcq') {
-      inner += '<div class="options">';
-      q.options.forEach((opt, j) => {
-        inner += `<label class="option-label">
-          <input type="radio" name="q${i}" value="${j}" onchange="updateProgress()">
-          <span>${String.fromCharCode(65+j)}. ${opt}</span>
-        </label>`;
-      });
-      inner += '</div>';
-    } else {
-      inner += `<textarea id="ta${i}" placeholder="Type your answer here…" maxlength="2000" oninput="updateProgress()" onkeydown="blockShortcuts(event)"></textarea>
-        <div style="text-align:right;font-size:11px;color:var(--muted);margin-top:4px" id="char${i}">0 / 2000</div>`;
-    }
-
-    card.innerHTML = inner;
-    container.appendChild(card);
-
-    if (q.type === 'text') {
-      document.getElementById('ta'+i).addEventListener('input', function() {
-        document.getElementById('char'+i).textContent = this.value.length + ' / 2000';
-      });
-    }
-  });
+  }, 1000);
 }
 
-function updateProgress() {
-  let answered = 0;
-  QUESTIONS.forEach((q, i) => {
-    if (q.type === 'mcq') {
-      if (document.querySelector(`input[name="q${i}"]:checked`)) answered++;
-    } else {
-      const ta = document.getElementById('ta'+i);
-      if (ta && ta.value.trim().length > 2) answered++;
-    }
-  });
-  document.getElementById('progress-fill').style.width = Math.round(answered/QUESTIONS.length*100)+'%';
+function updateQTimerDisplay() {
+  const q = QUESTIONS[currentQIndex];
+  const limit = q.type === 'mcq' ? MCQ_TIME_LIMIT : TEXT_TIME_LIMIT;
+  const disp = document.getElementById('q-timer-display');
+  const bar  = document.getElementById('q-timer-bar');
+  disp.textContent = qSecondsLeft + 's';
+  const pct = Math.max(0, (qSecondsLeft / limit) * 100);
+  bar.style.width = pct + '%';
+
+  disp.classList.remove('warning','critical');
+  bar.classList.remove('warning','critical');
+  if (qSecondsLeft <= Math.ceil(limit*0.3)) {
+    disp.classList.add('critical'); bar.classList.add('critical');
+  } else if (qSecondsLeft <= Math.ceil(limit*0.6)) {
+    disp.classList.add('warning'); bar.classList.add('warning');
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  CAPTURE ANSWER FOR CURRENT QUESTION
+// ═══════════════════════════════════════════════════════
+function captureCurrentAnswer() {
+  const q = QUESTIONS[currentQIndex];
+  if (q.type === 'mcq') {
+    const sel = document.querySelector('input[name="qcur"]:checked');
+    userAnswers[currentQIndex] = sel ? parseInt(sel.value) : null;
+  } else {
+    const ta = document.getElementById('ta-current');
+    userAnswers[currentQIndex] = ta ? ta.value.trim() : '';
+  }
+}
+
+function onAnswerChange() {
+  // live-capture so partial typing isn't lost if timer fires
+  captureCurrentAnswer();
+}
+
+// ═══════════════════════════════════════════════════════
+//  NAVIGATION — forward only
+// ═══════════════════════════════════════════════════════
+function goNext() {
+  if (!testActive) return;
+  captureCurrentAnswer();
+  clearInterval(qTimerInterval);
+  if (currentQIndex < QUESTIONS.length - 1) {
+    currentQIndex++;
+    renderQuestion(currentQIndex);
+  }
+}
+
+function autoAdvance() {
+  if (!testActive) return;
+  captureCurrentAnswer();
+  showToast('⏱ Time up for this question — moving on');
+  if (currentQIndex < QUESTIONS.length - 1) {
+    currentQIndex++;
+    renderQuestion(currentQIndex);
+  } else {
+    // last question's time ran out — auto submit
+    submitTest(false, 'timeout');
+  }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1031,6 +1183,11 @@ function dismissOverlay(id) {
 // ═══════════════════════════════════════════════════════
 function confirmSubmit() {
   if (testEnded) return;
+  captureCurrentAnswer();
+  // NOTE: qTimerInterval is intentionally NOT paused here.
+  // If the candidate ignores the confirm dialog and lets time run out,
+  // autoAdvance() will fire and force-submit — closing the loophole
+  // of leaving the dialog open to look up answers.
   document.getElementById('overlay-submit').classList.add('show');
 }
 
@@ -1039,6 +1196,7 @@ async function submitTest(manual=true, reason='manual') {
   testEnded = true;
   testActive = false;
   clearInterval(timerInterval);
+  clearInterval(qTimerInterval);
   dismissOverlay('overlay-submit');
 
   const elapsed = startTime ? Math.floor((new Date()-startTime)/1000) : 0;
@@ -1080,18 +1238,19 @@ async function submitTest(manual=true, reason='manual') {
 }
 
 function collectAnswers() {
+  // Make sure the currently-displayed question's answer is captured
+  captureCurrentAnswer();
+
   const answers = [];
   let score = 0;
   QUESTIONS.forEach((q, i) => {
+    const val = userAnswers[i];
     if (q.type === 'mcq') {
-      const sel = document.querySelector(`input[name="q${i}"]:checked`);
-      const val = sel ? parseInt(sel.value) : null;
       const correct = val === q.correct;
       if (correct) score++;
-      answers.push({ q:i+1, type:'mcq', selected: val!==null ? q.options[val] : 'Not answered', correct });
+      answers.push({ q:i+1, type:'mcq', selected: (val!==null && val!==undefined) ? q.options[val] : 'Not answered', correct });
     } else {
-      const ta = document.getElementById('ta'+i);
-      answers.push({ q:i+1, type:'text', question: q.text, answer: ta ? ta.value.trim() : '' });
+      answers.push({ q:i+1, type:'text', question: q.text, answer: (val || '').toString().trim() });
     }
   });
   return { answers, score };
@@ -1129,6 +1288,7 @@ function terminateTest() {
   testEnded = true;
   testActive = false;
   clearInterval(timerInterval);
+  clearInterval(qTimerInterval);
 
   const { answers, score } = collectAnswers();
   const elapsed = startTime ? Math.floor((new Date()-startTime)/1000) : 0;
