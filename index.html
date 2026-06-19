@@ -54,27 +54,6 @@
   .logo { font-size: 14px; font-weight: 700; letter-spacing: 0.04em; color: #e8eaf0; }
   .logo span { color: var(--gold); }
 
-  #timer-box {
-    display: none;
-    align-items: center;
-    gap: 8px;
-    background: rgba(255,255,255,0.08);
-    border: 1px solid rgba(255,255,255,0.15);
-    border-radius: 8px;
-    padding: 5px 14px;
-    font-size: 12px;
-    color: #aeb8d0;
-  }
-  #timer-display {
-    font-family: var(--mono);
-    font-size: 18px;
-    font-weight: 700;
-    color: #fff;
-    min-width: 54px;
-    text-align: center;
-  }
-  #timer-display.warning { color: var(--gold-light); }
-  #timer-display.critical { color: #ff6b6b; animation: blink 1s step-end infinite; }
   @keyframes blink { 50% { opacity: 0.3; } }
 
   /* ── WARNING BANNER ── */
@@ -601,9 +580,6 @@
 <!-- ═══ HEADER ═══ -->
 <header>
   <div class="logo">MITTAL <span>PORTFOLIOS</span></div>
-  <div id="timer-box">
-    ⏱ <span id="timer-display">20:00</span>
-  </div>
 </header>
 
 <div id="warning-banner">⚠ This window is being monitored — do not switch tabs or minimize</div>
@@ -818,7 +794,6 @@ const QUESTIONS = [
 ];
 
 const MCQ_COUNT = QUESTIONS.filter(q=>q.type==='mcq').length;
-const TOTAL_SECONDS = 20 * 60;
 
 // ═══════════════════════════════════════════════════════
 //  STATE
@@ -829,8 +804,6 @@ let testActive = false;
 let testEnded = false;
 let violations = 0;
 let violationOverlayOpen = false;
-let timerInterval = null;
-let secondsLeft = TOTAL_SECONDS;
 let startTime = null;
 
 // ═══════════════════════════════════════════════════════
@@ -976,11 +949,9 @@ const TEXT_TIME_LIMIT = 30;  // seconds per descriptive question
 
 function beginTest() {
   showScreen('screen-quiz');
-  document.getElementById('timer-box').style.display = 'flex';
   document.getElementById('warning-banner').classList.add('show');
   testActive = true;
   startTime = new Date();
-  startTimer();          // overall 20-min timer (unchanged)
   attachAntiCheat();
   try { document.documentElement.requestFullscreen && document.documentElement.requestFullscreen(); } catch(e){}
 
@@ -1118,23 +1089,6 @@ function autoAdvance() {
 }
 
 // ═══════════════════════════════════════════════════════
-//  TIMER
-// ═══════════════════════════════════════════════════════
-function startTimer() {
-  timerInterval = setInterval(() => {
-    if (!testActive) return;
-    secondsLeft--;
-    const m = Math.floor(secondsLeft/60);
-    const s = secondsLeft%60;
-    const el = document.getElementById('timer-display');
-    el.textContent = String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
-    if (secondsLeft <= 60) el.className = 'critical';
-    else if (secondsLeft <= 5*60) el.className = 'warning';
-    if (secondsLeft <= 0) { clearInterval(timerInterval); submitTest(false, 'timeout'); }
-  }, 1000);
-}
-
-// ═══════════════════════════════════════════════════════
 //  ANTI-CHEAT
 // ═══════════════════════════════════════════════════════
 function attachAntiCheat() {
@@ -1195,7 +1149,6 @@ async function submitTest(manual=true, reason='manual') {
   if (testEnded) return;
   testEnded = true;
   testActive = false;
-  clearInterval(timerInterval);
   clearInterval(qTimerInterval);
   dismissOverlay('overlay-submit');
 
@@ -1257,7 +1210,6 @@ function collectAnswers() {
 }
 
 function showResult(score, timeStr, viols, reason) {
-  document.getElementById('timer-box').style.display = 'none';
   document.getElementById('warning-banner').classList.remove('show');
   showScreen('screen-result');
 
@@ -1287,7 +1239,6 @@ function terminateTest() {
   if (testEnded) return;
   testEnded = true;
   testActive = false;
-  clearInterval(timerInterval);
   clearInterval(qTimerInterval);
 
   const { answers, score } = collectAnswers();
@@ -1308,7 +1259,6 @@ function terminateTest() {
   });
   pingUrl(APPS_SCRIPT_URL+'?'+params2.toString());
 
-  document.getElementById('timer-box').style.display = 'none';
   document.getElementById('warning-banner').classList.remove('show');
   showScreen('screen-terminated');
 }
